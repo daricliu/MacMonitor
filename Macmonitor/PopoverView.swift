@@ -142,23 +142,24 @@ private struct CPUSection: View {
         SectionBox(icon: "cpu", title: "CPU") {
             Row(label: "Overall") { StatBar(pct: model.cpuUsage) }
             if model.eCoreCount > 0 {
-                Row(label: "E-cluster  \(model.eCoresMHz) MHz") {
+                Row(label: "E-core  \(model.eCoresMHz) MHz") {
                     StatBar(pct: model.eCoresPct, color: Color(hex: "64D2FF"))
                 }
-                Row(label: "P-cluster  \(model.pCoresMHz) MHz") {
+            }
+            if model.pCoreCount > 0 {
+                Row(label: "P-core  \(model.pCoresMHz) MHz") {
                     StatBar(pct: model.pCoresPct, color: Color(hex: "BF5AF2"))
                 }
-                // M5+ Super cluster — only shown when present
-                if model.sClusterPct > 0 || model.sClusterMHz > 0 {
-                    Row(label: "S-cluster  \(model.sClusterMHz) MHz") {
-                        StatBar(pct: model.sClusterPct, color: Color(hex: "FF6B6B"))
-                    }
+            }
+            if model.sCoreCount > 0 {
+                Row(label: "S-core  \(model.sClusterMHz) MHz") {
+                    StatBar(pct: model.sClusterPct, color: Color(hex: "FF6B6B"))
                 }
             }
             if !model.perCoreCPU.isEmpty {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
                     ForEach(Array(model.perCoreCPU.enumerated()), id: \.offset) { i, pct in
-                        CoreTile(index: i, pct: pct, isE: i < model.eCoreCount)
+                        CoreTile(index: i, pct: pct, kind: coreKind(at: i))
                     }
                 }
                 .padding(.top, 4)
@@ -177,6 +178,11 @@ private struct CPUSection: View {
             }
             .padding(.top, 2)
         }
+    }
+
+    private func coreKind(at index: Int) -> CPUCoreKind {
+        guard model.cpuCoreKinds.indices.contains(index) else { return .performance }
+        return model.cpuCoreKinds[index]
     }
 }
 
@@ -604,10 +610,17 @@ private struct StatBar: View {
 }
 
 private struct CoreTile: View {
-    let index: Int; let pct: Double; let isE: Bool
+    let index: Int; let pct: Double; let kind: CPUCoreKind
     var color: Color {
         pct >= 85 ? Color(hex:"FF453A") : pct >= 60 ? Color(hex:"FFD60A")
-            : (isE ? Color(hex:"64D2FF") : Color(hex:"BF5AF2"))
+            : baseColor
+    }
+    var baseColor: Color {
+        switch kind {
+        case .efficiency: return Color(hex:"64D2FF")
+        case .performance: return Color(hex:"BF5AF2")
+        case .superPerformance: return Color(hex:"FF6B6B")
+        }
     }
     var body: some View {
         HStack(spacing: 5) {
