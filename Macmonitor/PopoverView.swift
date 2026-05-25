@@ -159,7 +159,7 @@ private struct CPUSection: View {
             if !model.perCoreCPU.isEmpty {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
                     ForEach(Array(model.perCoreCPU.enumerated()), id: \.offset) { i, pct in
-                        CoreTile(index: i, pct: pct, kind: coreKind(at: i))
+                        CoreTile(label: coreLabel(at: i), pct: pct, kind: coreKind(at: i))
                     }
                 }
                 .padding(.top, 4)
@@ -183,6 +183,36 @@ private struct CPUSection: View {
     private func coreKind(at index: Int) -> CPUCoreKind {
         guard model.cpuCoreKinds.indices.contains(index) else { return .performance }
         return model.cpuCoreKinds[index]
+    }
+
+    private func coreLabel(at index: Int) -> String {
+        let kind = coreKind(at: index)
+        let ordinal = coreOrdinal(at: index, kind: kind)
+        switch kind {
+        case .efficiency:
+            return String(format: "E%02d", ordinal)
+        case .performance:
+            return String(format: "P%02d", ordinal)
+        case .superPerformance:
+            return String(format: "S%02d", ordinal)
+        }
+    }
+
+    private func coreOrdinal(at index: Int, kind: CPUCoreKind) -> Int {
+        guard !model.cpuCoreKinds.isEmpty else { return index + 1 }
+
+        var ordinal = 0
+        for currentKind in model.cpuCoreKinds.prefix(index + 1) {
+            switch (currentKind, kind) {
+            case (.efficiency, .efficiency),
+                 (.performance, .performance),
+                 (.superPerformance, .superPerformance):
+                ordinal += 1
+            default:
+                break
+            }
+        }
+        return max(ordinal, 1)
     }
 }
 
@@ -610,7 +640,7 @@ private struct StatBar: View {
 }
 
 private struct CoreTile: View {
-    let index: Int; let pct: Double; let kind: CPUCoreKind
+    let label: String; let pct: Double; let kind: CPUCoreKind
     var color: Color {
         pct >= 85 ? Color(hex:"FF453A") : pct >= 60 ? Color(hex:"FFD60A")
             : baseColor
@@ -624,8 +654,8 @@ private struct CoreTile: View {
     }
     var body: some View {
         HStack(spacing: 5) {
-            Text("C\(index)").font(.system(size: 9, design: .monospaced))
-                .foregroundColor(color.opacity(0.7)).frame(width: 16)
+            Text(label).font(.system(size: 9, design: .monospaced))
+                .foregroundColor(color.opacity(0.7)).frame(width: 24, alignment: .leading)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.06))

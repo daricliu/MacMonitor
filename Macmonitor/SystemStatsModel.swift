@@ -27,6 +27,11 @@ private struct CPUCoreTopology {
     let orderedKinds: [CPUCoreKind]
 }
 
+private struct CPUCoreSamples {
+    let active: [Double]
+    let kinds: [CPUCoreKind]
+}
+
 // MARK: - Model
 
 class SystemStatsModel: ObservableObject {
@@ -122,6 +127,7 @@ class SystemStatsModel: ObservableObject {
     private var diskInFlight          = false  // prevent concurrent ioreg calls piling up
     private var prevTickTime: Date  = Date()
     private var batterySampleCountdown    = 0
+    private var hasIOReportCPUCoreSamples = false
     private var timer: Timer?
     private var diskTimer: Timer?          // independent timer — keeps ioreg off samplerQueue
     private let samplerQueue = DispatchQueue(label: "rybo.Macmonitor.sampler", qos: .utility)
@@ -197,8 +203,10 @@ class SystemStatsModel: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.cpuUsage    = Int(cpu.rounded())
-                self.perCoreCPU  = cores
-                self.updateCPUClusterUsageFromPerCore()
+                if !self.hasIOReportCPUCoreSamples {
+                    self.perCoreCPU = cores
+                    self.updateCPUClusterUsageFromPerCore()
+                }
                 self.memUsed     = mUsed
                 self.memTotal    = mTot
                 self.memPct      = mTot > 0 ? Int(mUsed * 100 / mTot) : 0
@@ -459,6 +467,14 @@ class SystemStatsModel: ObservableObject {
                 self.pCoresMHz = Int(pData.pClusterFreqMHz)
                 self.sClusterMHz = Int(pData.sClusterFreqMHz)
 
+                let cpuCores = Self.cpuCoreSamples(from: pData)
+                if !cpuCores.active.isEmpty {
+                    self.hasIOReportCPUCoreSamples = true
+                    self.perCoreCPU = cpuCores.active
+                    self.cpuCoreKinds = cpuCores.kinds
+                    self.updateCPUClusterUsageFromPerCore()
+                }
+
                 // DRAM bandwidth: bytes transferred / sample interval (0.1 s) → GB/s
                 let totalDramBytes = pData.dramReadBytes + pData.dramWriteBytes
                 self.dramBW = Double(totalDramBytes) / 0.1 / 1_000_000_000
@@ -546,11 +562,30 @@ class SystemStatsModel: ObservableObject {
         result.gpuFreqMHz      = i32("gpuFreqMHz")
         result.eClusterActive  = dbl("eClusterActive")
         result.pClusterActive  = dbl("pClusterActive")
+        result.sClusterActive  = dbl("sClusterActive")
         result.eClusterFreqMHz = i32("eClusterFreqMHz")
         result.pClusterFreqMHz = i32("pClusterFreqMHz")
+        result.sClusterFreqMHz = i32("sClusterFreqMHz")
         result.dramReadBytes   = i64("dramReadBytes")
         result.dramWriteBytes  = i64("dramWriteBytes")
         result.fanRPM          = i32("fanRPM")
+        if let activeValues = payload["cpuCoreActive"] as? [NSNumber],
+           let kindValues = payload["cpuCoreKinds"] as? [NSNumber] {
+            let count = min(activeValues.count, kindValues.count, 32)
+            result.cpuCoreCount = Int32(count)
+            withUnsafeMutableBytes(of: &result.cpuCoreActive) { rawBuffer in
+                let buffer = rawBuffer.bindMemory(to: Double.self)
+                for index in 0..<count {
+                    buffer[index] = activeValues[index].doubleValue
+                }
+            }
+            withUnsafeMutableBytes(of: &result.cpuCoreKind) { rawBuffer in
+                let buffer = rawBuffer.bindMemory(to: Int32.self)
+                for index in 0..<count {
+                    buffer[index] = kindValues[index].int32Value
+                }
+            }
+        }
         return result
     }
 
@@ -610,6 +645,11 @@ class SystemStatsModel: ObservableObject {
         if primary.dramWriteBytes > 0  { merged.dramWriteBytes  = primary.dramWriteBytes }
         if primary.cpuDieHotspot > 0   { merged.cpuDieHotspot   = primary.cpuDieHotspot }
         if primary.fanRPM > 0          { merged.fanRPM          = primary.fanRPM }
+        if primary.cpuCoreCount > 0 {
+            merged.cpuCoreCount = primary.cpuCoreCount
+            merged.cpuCoreActive = primary.cpuCoreActive
+            merged.cpuCoreKind = primary.cpuCoreKind
+        }
         return merged
     }
 
@@ -795,6 +835,38 @@ private extension SystemStatsModel {
         var size = MemoryLayout<Int32>.size
         guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return 0 }
         return Int(value)
+    }
+
+    static func cpuCoreSamples(from data: IOReportData) -> CPUCoreSamples {
+        guard data.cpuCoreCount > 0,
+              let activeValues = IOReportWrapper.cpuCoreActiveValues(for: data),
+              let kindValues = IOReportWrapper.cpuCoreKindValues(for: data) else {
+            return CPUCoreSamples(active: [], kinds: [])
+        }
+
+        let count = min(Int(data.cpuCoreCount), activeValues.count, kindValues.count)
+        guard count > 0 else {
+            return CPUCoreSamples(active: [], kinds: [])
+        }
+
+        var active: [Double] = []
+        var kinds: [CPUCoreKind] = []
+        active.reserveCapacity(count)
+        kinds.reserveCapacity(count)
+
+        for index in 0..<count {
+            active.append(activeValues[index].doubleValue)
+            switch kindValues[index].int32Value {
+            case 1:
+                kinds.append(.efficiency)
+            case 3:
+                kinds.append(.superPerformance)
+            default:
+                kinds.append(.performance)
+            }
+        }
+
+        return CPUCoreSamples(active: active, kinds: kinds)
     }
 
     static func detectCPUCoreTopology() -> CPUCoreTopology {
